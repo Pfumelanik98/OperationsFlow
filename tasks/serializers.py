@@ -7,14 +7,30 @@ User = get_user_model()
 
 
 class UserSerializer(serializers.ModelSerializer):
+    manager_name = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ["id", "username", "email", "first_name", "last_name", "role"]
+        fields = [
+            "id",
+            "username",
+            "email",
+            "first_name",
+            "last_name",
+            "role",
+            "manager",
+            "manager_name",
+        ]
+
+    def get_manager_name(self, obj):
+        if obj.manager:
+            return obj.manager.get_full_name() or obj.manager.username
+        return None
 
 
 class TaskSerializer(serializers.ModelSerializer):
     assignee = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), allow_null=True, required=False)
-    requester = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), allow_null=True, required=False)
+    requester = serializers.PrimaryKeyRelatedField(read_only=True)
     assignee_name = serializers.SerializerMethodField()
     requester_name = serializers.SerializerMethodField()
 
@@ -48,7 +64,12 @@ class TaskSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         user = self.context["request"].user
-        if attrs.get("assignee") and attrs["assignee"].id != user.id and user.role not in {User.Role.ADMINISTRATOR, User.Role.IT_MANAGER}:
+        if (
+            attrs.get("assignee")
+            and attrs["assignee"].id != user.id
+            and not user.is_superuser
+            and user.role not in {User.Role.ADMINISTRATOR, User.Role.IT_MANAGER}
+        ):
             raise serializers.ValidationError("Employees may only assign work to themselves.")
         return attrs
 
@@ -66,4 +87,4 @@ class NotificationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Notification
         fields = ["id", "user", "task", "message", "is_read", "created_at"]
-        read_only_fields = ["created_at"]
+        read_only_fields = ["user", "task", "message", "created_at"]

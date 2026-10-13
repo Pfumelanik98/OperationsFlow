@@ -1,5 +1,5 @@
-from django.contrib.auth.models import AbstractUser
-from django.db import models
+from django.contrib.auth.models import AbstractUser  # type: ignore
+from django.db import models  # type: ignore
 
 
 class User(AbstractUser):
@@ -12,6 +12,13 @@ class User(AbstractUser):
         max_length=30,
         choices=Role.choices,
         default=Role.IT_EMPLOYEE,
+    )
+    manager = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="direct_reports",
     )
 
     def __str__(self):

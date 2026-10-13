@@ -127,6 +127,23 @@ button {
   flex-wrap: wrap;
 }
 
+.account-chip,
+.button-row,
+.section-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.section-heading,
+.attendance-actions {
+  justify-content: space-between;
+}
+
+.account-chip {
+  color: #475569;
+}
+
 .login-form input,
 .task-form input,
 .task-form textarea,
@@ -186,6 +203,129 @@ button {
 
 .panel h3 {
   margin-top: 0;
+}
+
+.muted {
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.button-row {
+  flex-wrap: wrap;
+}
+
+.button-row button,
+.task-form button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: #2563eb;
+  color: white;
+}
+
+.button-row button.secondary {
+  background: #e2e8f0;
+  color: #1e293b;
+}
+
+.compact-form {
+  margin: 16px 0;
+}
+
+.leave-list {
+  margin-top: 20px;
+}
+
+.operations-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 12px;
+}
+
+.summary-item,
+.report-box {
+  display: grid;
+  gap: 7px;
+  background: #f8faff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 14px;
+  color: #475569;
+  font-size: 0.88rem;
+}
+
+.notification-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid #edf2ff;
+}
+
+.notification-row.read {
+  color: #64748b;
+}
+
+.notification-row button {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 10px;
+  color: #1e293b;
+  background: #e2e8f0;
+}
+
+.summary-item strong,
+.report-box strong {
+  color: #10213a;
+}
+
+.feedback-response,
+.action-form,
+.report-box {
+  margin-top: 16px;
+}
+
+.correction-details {
+  margin-top: 14px;
+  color: #334155;
+}
+
+.correction-details summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.checkbox-label {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+}
+
+.action-list {
+  display: grid;
+  gap: 8px;
+  padding-left: 20px;
+}
+
+.action-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.action-list select {
+  border: 1px solid #dbe3f1;
+  border-radius: 8px;
+  padding: 6px;
+  background: white;
+}
+
+.task-form button:hover,
+.button-row button:hover {
+  filter: brightness(0.94);
 }
 
 .activity-list {

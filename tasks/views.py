@@ -1,59 +1,70 @@
-from django.contrib.auth import get_user_model
-from rest_framework import permissions, serializers, viewsets
-from rest_framework.decorators import action
-from rest_framework.response import Response
+# pyright: reportMissingImports=false
+from django.db.models import QuerySet
+from django.db.models import Q
+from rest_framework import permissions, serializers, viewsets  # type: ignore[import-not-found]
+from rest_framework.decorators import action  # type: ignore[import-not-found]
+from rest_framework.exceptions import PermissionDenied  # type: ignore[import-not-found]
+from rest_framework.response import Response  # type: ignore[import-not-found]
 
+from .access import is_administrator
 from .models import Notification, Task, TaskComment, User
 from .serializers import NotificationSerializer, TaskCommentSerializer, TaskSerializer, UserSerializer
 
-UserModel = get_user_model()
-ADMIN_ACTION_ROLES = {UserModel.Role.ADMINISTRATOR, UserModel.Role.IT_MANAGER}
+def can_manage_department_tasks(user):
+    return is_administrator(user) or user.role == User.Role.IT_MANAGER
 
 
-class IsAuthenticatedUser(permissions.BasePermission):
-    def has_permission(self, request, view):
-        return bool(request.user and request.user.is_authenticated)
+def operations_user(candidate):
+    if not isinstance(candidate, User):
+        raise PermissionDenied("An authenticated OperationsFlow user is required.")
+    return candidate
 
 
 class TaskViewSet(viewsets.ModelViewSet):
     queryset = Task.objects.select_related("assignee", "requester").all()
     serializer_class = TaskSerializer
-    permission_classes = [IsAuthenticatedUser]
+    permission_classes = [permissions.IsAuthenticated]
 
-    def get_queryset(self):
+    def get_queryset(self) -> QuerySet[Task]:  # type: ignore[override]
         user = self.request.user
+        if not isinstance(user, User):
+            return Task.objects.none()
         qs = Task.objects.select_related("assignee", "requester").all()
-        if user.role in ADMIN_ACTION_ROLES:
+        if can_manage_department_tasks(user):
             return qs.order_by("-updated_at")
         return qs.filter(assignee=user).order_by("-updated_at")
 
     def create(self, request, *args, **kwargs):
-        user = request.user
+        user = operations_user(request.user)
         payload = request.data.copy()
-        if "assignee" in payload and payload["assignee"] and user.role not in ADMIN_ACTION_ROLES:
-            assignee_id = int(payload["assignee"])
-            if assignee_id != user.id:
+        if "assignee" in payload and payload["assignee"] and not can_manage_department_tasks(user):
+            try:
+                assignee_id = int(payload["assignee"])
+            except (TypeError, ValueError):
+                assignee_id = None
+            if assignee_id is not None and assignee_id != user.pk:
                 raise serializers.ValidationError({"assignee": "Employees can only assign tasks to themselves."})
-        if "requester" not in payload:
-            payload["requester"] = user.id
         serializer = self.get_serializer(data=payload)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=201, headers=headers)
 
+    def perform_create(self, serializer):
+        serializer.save(requester=operations_user(self.request.user))
+
     def update(self, request, *args, **kwargs):
         task = self.get_object()
-        user = request.user
-        if user.role not in ADMIN_ACTION_ROLES and task.assignee_id != user.id:
-            raise permissions.PermissionDenied("You can only update your own assigned tasks.")
+        user = operations_user(request.user)
+        if not can_manage_department_tasks(user) and task.assignee_id != user.pk:
+            raise PermissionDenied("You can only update your own assigned tasks.")
         return super().update(request, *args, **kwargs)
 
     def partial_update(self, request, *args, **kwargs):
         task = self.get_object()
-        user = request.user
-        if user.role not in ADMIN_ACTION_ROLES and task.assignee_id != user.id:
-            raise permissions.PermissionDenied("You can only update your own assigned tasks.")
+        user = operations_user(request.user)
+        if not can_manage_department_tasks(user) and task.assignee_id != user.pk:
+            raise PermissionDenied("You can only update your own assigned tasks.")
         return super().partial_update(request, *args, **kwargs)
 
     @action(detail=True, methods=["post"], url_path="comment")
@@ -62,37 +73,60 @@ class TaskViewSet(viewsets.ModelViewSet):
         body = request.data.get("body", "").strip()
         if not body:
             raise serializers.ValidationError({"body": "A comment cannot be empty."})
-        comment = TaskComment.objects.create(task=task, author=request.user, body=body)
+        comment = TaskComment.objects.create(
+            task=task,
+            author=operations_user(request.user),
+            body=body,
+        )
         return Response(TaskCommentSerializer(comment).data, status=201)
 
 
 class UserViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = UserModel.objects.order_by("username")
+    queryset = User.objects.order_by("username")
     serializer_class = UserSerializer
-    permission_classes = [IsAuthenticatedUser]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self) -> QuerySet[User]:  # type: ignore[override]
+        user = self.request.user
+        if not isinstance(user, User):
+            return User.objects.none()
+        if is_administrator(user):
+            return User.objects.filter(is_active=True).order_by("username")
+        if user.role == User.Role.IT_MANAGER:
+            return User.objects.filter(
+                Q(pk=user.pk) | Q(manager=user),
+                is_active=True,
+            ).order_by("username")
+        return User.objects.filter(pk=user.pk)
 
 
-class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
+class NotificationViewSet(viewsets.ModelViewSet):
     serializer_class = NotificationSerializer
-    permission_classes = [IsAuthenticatedUser]
+    permission_classes = [permissions.IsAuthenticated]
+    http_method_names = ["get", "patch", "head", "options"]
 
-    def get_queryset(self):
-        return Notification.objects.filter(user=self.request.user).order_by("-created_at")
+    def get_queryset(self) -> QuerySet[Notification]:  # type: ignore[override]
+        user = self.request.user
+        if not isinstance(user, User):
+            return Notification.objects.none()
+        return Notification.objects.filter(user=user).order_by("-created_at")
 
 
 class TaskCommentViewSet(viewsets.ModelViewSet):
     serializer_class = TaskCommentSerializer
-    permission_classes = [IsAuthenticatedUser]
+    permission_classes = [permissions.IsAuthenticated]
 
-    def get_queryset(self):
+    def get_queryset(self) -> QuerySet[TaskComment]:  # type: ignore[override]
         user = self.request.user
-        if user.role in ADMIN_ACTION_ROLES:
+        if not isinstance(user, User):
+            return TaskComment.objects.none()
+        if can_manage_department_tasks(user):
             return TaskComment.objects.select_related("task", "author").all()
         return TaskComment.objects.select_related("task", "author").filter(task__assignee=user)
 
     def perform_create(self, serializer):
         task = serializer.validated_data["task"]
-        user = self.request.user
-        if user.role not in ADMIN_ACTION_ROLES and task.assignee_id != user.id:
-            raise permissions.PermissionDenied("You can only comment on tasks assigned to you.")
+        user = operations_user(self.request.user)
+        if not can_manage_department_tasks(user) and task.assignee_id != user.pk:
+            raise PermissionDenied("You can only comment on tasks assigned to you.")
         serializer.save(author=user)
