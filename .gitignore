@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.sqlite3
+.venv/
+venv/
+node_modules/
+frontend/dist/
+.env
+.pytest_cache/
+.DS_Store
