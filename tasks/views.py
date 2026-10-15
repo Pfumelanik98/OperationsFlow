@@ -81,22 +81,13 @@ class TaskViewSet(viewsets.ModelViewSet):
         if not can_manage_department_tasks(user) and task.assignee_id != user.pk:
             raise PermissionDenied("You can only update your own assigned tasks.")
         if not can_manage_department_tasks(user):
-            raise PermissionDenied("Employees may update task status only.")
+            if request.method != "PATCH":
+                raise PermissionDenied("Employees may update task status only.")
+            if set(request.data.keys()) - {"status"}:
+                raise serializers.ValidationError(
+                    {"detail": "Employees may update task status only."}
+                )
         return super().update(request, *args, **kwargs)
-
-    def partial_update(self, request, *args, **kwargs):
-        task = self.get_object()
-        user = operations_user(request.user)
-        if not can_manage_department_tasks(user) and task.assignee_id != user.pk:
-            raise PermissionDenied("You can only update your own assigned tasks.")
-        if (
-            not can_manage_department_tasks(user)
-            and set(request.data.keys()) - {"status"}
-        ):
-            raise serializers.ValidationError(
-                {"detail": "Employees may update task status only."}
-            )
-        return super().partial_update(request, *args, **kwargs)
 
     @action(detail=True, methods=["post"], url_path="comment")
     def add_comment(self, request, pk=None):

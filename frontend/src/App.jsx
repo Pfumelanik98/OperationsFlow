@@ -451,7 +451,7 @@ function App() {
             <button className={view === 'workspace' ? 'active' : ''} onClick={() => setView('workspace')}>
               My Workspace
             </button>
-          )}
+          ))}
         </nav>
       </aside>
 
