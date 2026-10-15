@@ -123,6 +123,44 @@ class AttendanceApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual([row["id"] for row in response.data], [own_record.id])
 
+    def test_employee_cannot_view_another_employees_attendance_record(self):
+        other_record = AttendanceRecord.objects.create(
+            employee=self.other_employee,
+            work_date=self.today,
+            status=AttendanceRecord.Status.PRESENT,
+        )
+        self.client.force_authenticate(user=self.employee)
+
+        response = self.client.get(
+            reverse("attendance-record-detail", args=[other_record.id])
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_employee_report_contains_only_their_attendance(self):
+        own_record = AttendanceRecord.objects.create(
+            employee=self.employee,
+            work_date=self.today,
+            status=AttendanceRecord.Status.PRESENT,
+        )
+        AttendanceRecord.objects.create(
+            employee=self.other_employee,
+            work_date=self.today,
+            status=AttendanceRecord.Status.PRESENT,
+        )
+        self.client.force_authenticate(user=self.employee)
+
+        response = self.client.get(
+            reverse("attendance-report"),
+            {"period": "daily", "date": self.today.isoformat()},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [record["id"] for record in response.data["records"]],
+            [own_record.id],
+        )
+
     def test_report_flags_missing_record_for_review_not_absence(self):
         WorkSchedule.objects.create(
             employee=self.employee,

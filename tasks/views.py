@@ -6,7 +6,7 @@ from rest_framework.decorators import action  # type: ignore[import-not-found]
 from rest_framework.exceptions import PermissionDenied  # type: ignore[import-not-found]
 from rest_framework.response import Response  # type: ignore[import-not-found]
 
-from .access import is_administrator
+from .access import can_manage_employee, is_administrator
 from .models import Notification, Task, TaskComment, User
 from .serializers import NotificationSerializer, TaskCommentSerializer, TaskSerializer, UserSerializer
 
@@ -30,9 +30,20 @@ class TaskViewSet(viewsets.ModelViewSet):
         if not isinstance(user, User):
             return Task.objects.none()
         qs = Task.objects.select_related("assignee", "requester").all()
-        if can_manage_department_tasks(user):
+        if is_administrator(user):
             return qs.order_by("-updated_at")
+        if user.role == User.Role.IT_MANAGER:
+            return qs.filter(
+                Q(assignee=user)
+                | Q(assignee__manager=user)
+                | Q(requester=user)
+            ).distinct().order_by("-updated_at")
         return qs.filter(assignee=user).order_by("-updated_at")
+
+    @action(detail=False, methods=["get"], url_path="my-tasks")
+    def my_tasks(self, request):
+        tasks = self.get_queryset().filter(assignee=request.user)
+        return Response(self.get_serializer(tasks, many=True).data)
 
     def create(self, request, *args, **kwargs):
         user = operations_user(request.user)
@@ -46,6 +57,17 @@ class TaskViewSet(viewsets.ModelViewSet):
                 raise serializers.ValidationError({"assignee": "Employees can only assign tasks to themselves."})
         serializer = self.get_serializer(data=payload)
         serializer.is_valid(raise_exception=True)
+        assignee = serializer.validated_data.get("assignee")
+        if (
+            assignee
+            and user.role == User.Role.IT_MANAGER
+            and not is_administrator(user)
+            and assignee.id != user.id
+            and not can_manage_employee(user, assignee)
+        ):
+            raise serializers.ValidationError(
+                {"assignee": "Managers may only assign tasks to their direct reports."}
+            )
         self.perform_create(serializer)
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=201, headers=headers)
@@ -58,6 +80,8 @@ class TaskViewSet(viewsets.ModelViewSet):
         user = operations_user(request.user)
         if not can_manage_department_tasks(user) and task.assignee_id != user.pk:
             raise PermissionDenied("You can only update your own assigned tasks.")
+        if not can_manage_department_tasks(user):
+            raise PermissionDenied("Employees may update task status only.")
         return super().update(request, *args, **kwargs)
 
     def partial_update(self, request, *args, **kwargs):
@@ -65,6 +89,13 @@ class TaskViewSet(viewsets.ModelViewSet):
         user = operations_user(request.user)
         if not can_manage_department_tasks(user) and task.assignee_id != user.pk:
             raise PermissionDenied("You can only update your own assigned tasks.")
+        if (
+            not can_manage_department_tasks(user)
+            and set(request.data.keys()) - {"status"}
+        ):
+            raise serializers.ValidationError(
+                {"detail": "Employees may update task status only."}
+            )
         return super().partial_update(request, *args, **kwargs)
 
     @action(detail=True, methods=["post"], url_path="comment")
@@ -120,13 +151,26 @@ class TaskCommentViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if not isinstance(user, User):
             return TaskComment.objects.none()
-        if can_manage_department_tasks(user):
+        if is_administrator(user):
             return TaskComment.objects.select_related("task", "author").all()
+        if user.role == User.Role.IT_MANAGER:
+            return TaskComment.objects.select_related("task", "author").filter(
+                Q(task__assignee=user)
+                | Q(task__assignee__manager=user)
+                | Q(task__requester=user)
+            ).distinct()
         return TaskComment.objects.select_related("task", "author").filter(task__assignee=user)
 
     def perform_create(self, serializer):
         task = serializer.validated_data["task"]
         user = operations_user(self.request.user)
-        if not can_manage_department_tasks(user) and task.assignee_id != user.pk:
-            raise PermissionDenied("You can only comment on tasks assigned to you.")
+        if (
+            not is_administrator(user)
+            and task.assignee_id != user.pk
+            and task.requester_id != user.pk
+            and not (
+                task.assignee and can_manage_employee(user, task.assignee)
+            )
+        ):
+            raise PermissionDenied("You may only comment on tasks you own or manage.")
         serializer.save(author=user)

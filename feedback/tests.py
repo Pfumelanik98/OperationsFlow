@@ -45,6 +45,25 @@ class FeedbackApiTests(APITestCase):
         response = self.client.get(reverse("feedback-detail", args=[self.feedback.id]))
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_employee_feedback_list_contains_only_their_private_feedback(self):
+        other_feedback = EmployeeFeedback.objects.create(
+            employee=self.unrelated,
+            author=self.manager,
+            category=EmployeeFeedback.Category.COACHING,
+            content="Private feedback for another employee.",
+            feedback_date=date(2026, 10, 13),
+        )
+        self.client.force_authenticate(user=self.employee)
+
+        response = self.client.get(reverse("feedback-me"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([item["id"] for item in response.data], [self.feedback.id])
+        hidden = self.client.get(
+            reverse("feedback-detail", args=[other_feedback.id])
+        )
+        self.assertEqual(hidden.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_employee_can_acknowledge_without_changing_feedback(self):
         self.client.force_authenticate(user=self.employee)
         response = self.client.post(

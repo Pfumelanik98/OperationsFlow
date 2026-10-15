@@ -44,11 +44,122 @@ class OperationsFlowApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 1)
 
+    def test_my_tasks_endpoint_returns_only_the_authenticated_employees_tasks(self):
+        unrelated = User.objects.create_user(
+            username="unrelated",
+            email="unrelated@example.com",
+            password="test-password",
+            role=User.Role.IT_EMPLOYEE,
+        )
+        other_task = Task.objects.create(
+            title="Private task",
+            description="Belongs to another employee.",
+            assignee=unrelated,
+            requester=self.manager,
+        )
+        self.client.force_authenticate(user=self.employee)
+
+        response = self.client.get(reverse("task-my-tasks"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([task["id"] for task in response.data], [self.task.id])
+        hidden = self.client.get(reverse("task-detail", args=[other_task.id]))
+        self.assertEqual(hidden.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_employee_dashboard_contains_only_the_authenticated_employee(self):
+        self.client.force_authenticate(user=self.employee)
+
+        response = self.client.get(reverse("employee-operations-dashboard"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [entry["employee_id"] for entry in response.data["employees"]],
+            [self.employee.id],
+        )
+
+    def test_employee_can_update_task_status_but_not_task_details(self):
+        self.client.force_authenticate(user=self.employee)
+        detail = reverse("task-detail", args=[self.task.id])
+
+        updated = self.client.patch(
+            detail,
+            {"status": Task.Status.IN_PROGRESS},
+            format="json",
+        )
+        denied = self.client.patch(
+            detail,
+            {"title": "Changed title"},
+            format="json",
+        )
+
+        self.assertEqual(updated.status_code, status.HTTP_200_OK)
+        self.assertEqual(denied.status_code, status.HTTP_400_BAD_REQUEST)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, Task.Status.IN_PROGRESS)
+        self.assertEqual(self.task.title, "Reset VPN access")
+
     def test_manager_can_list_all_tasks(self):
         self.client.force_authenticate(user=self.manager)
         response = self.client.get(reverse("task-list"))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertGreaterEqual(len(response.data), 1)
+
+    def test_manager_task_list_excludes_tasks_outside_direct_reports(self):
+        other_manager = User.objects.create_user(
+            username="other-manager",
+            email="other-manager@example.com",
+            password="test-password",
+            role=User.Role.IT_MANAGER,
+        )
+        unrelated = User.objects.create_user(
+            username="unrelated-employee",
+            email="unrelated-employee@example.com",
+            password="test-password",
+            role=User.Role.IT_EMPLOYEE,
+            manager=other_manager,
+        )
+        other_task = Task.objects.create(
+            title="Unrelated task",
+            description="Must remain private from this manager.",
+            assignee=unrelated,
+            requester=other_manager,
+        )
+        self.client.force_authenticate(user=self.manager)
+
+        listing = self.client.get(reverse("task-list"))
+        hidden = self.client.get(reverse("task-detail", args=[other_task.id]))
+
+        self.assertEqual(listing.status_code, status.HTTP_200_OK)
+        self.assertNotIn(other_task.id, {task["id"] for task in listing.data})
+        self.assertEqual(hidden.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_manager_cannot_assign_task_to_an_unrelated_employee(self):
+        other_manager = User.objects.create_user(
+            username="other-manager",
+            email="other-manager@example.com",
+            password="test-password",
+            role=User.Role.IT_MANAGER,
+        )
+        unrelated = User.objects.create_user(
+            username="unrelated-employee",
+            email="unrelated-employee@example.com",
+            password="test-password",
+            role=User.Role.IT_EMPLOYEE,
+            manager=other_manager,
+        )
+        self.client.force_authenticate(user=self.manager)
+
+        response = self.client.post(
+            reverse("task-list"),
+            {
+                "title": "Out-of-team task",
+                "description": "This assignment should be denied.",
+                "assignee": unrelated.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_employee_cannot_assign_task_to_someone_else(self):
         self.client.force_authenticate(user=self.employee)
