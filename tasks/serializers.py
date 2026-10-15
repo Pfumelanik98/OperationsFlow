@@ -68,7 +68,7 @@ class TaskSerializer(serializers.ModelSerializer):
             attrs.get("assignee")
             and attrs["assignee"].id != user.id
             and not user.is_superuser
-            and user.role not in {User.Role.ADMINISTRATOR, User.Role.IT_MANAGER}
+            and user.role not in {"administrator", "it_manager"}
         ):
             raise serializers.ValidationError("Employees may only assign work to themselves.")
         return attrs

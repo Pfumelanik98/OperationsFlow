@@ -11,6 +11,10 @@ OperationsFlow is an internal IT team operations platform for task management, e
 
 ## Run locally (Git Bash)
 
+The requirements support Python 3.14 by using Django 5.2.8 or newer in the 5.2
+series. If you already have an environment with Django 5.1.2 installed, update
+it with `python -m pip install -r requirements.txt` before starting the server.
+
 From the project root:
 
 ```bash
