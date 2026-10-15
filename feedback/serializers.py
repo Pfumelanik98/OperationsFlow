@@ -1,6 +1,8 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
+from tasks.access import is_administrator
+from tasks.models import User
 from tasks.models import Task
 
 from .models import EmployeeFeedback, FeedbackActionItem
@@ -50,6 +52,14 @@ class EmployeeFeedbackSerializer(serializers.ModelSerializer):
         return obj.author.get_full_name() or obj.author.username
 
     def get_action_items(self, obj):
+        action_items = obj.action_items.all()
+        request = self.context.get("request")
+        if (
+            request
+            and not is_administrator(request.user)
+            and request.user.role != User.Role.IT_MANAGER
+        ):
+            action_items = action_items.filter(assigned_to=request.user)
         return [
             {
                 "id": item.id,
@@ -59,7 +69,7 @@ class EmployeeFeedbackSerializer(serializers.ModelSerializer):
                 "status": item.status,
                 "completed_at": item.completed_at,
             }
-            for item in obj.action_items.all()
+            for item in action_items
         ]
 
     def validate(self, attrs):

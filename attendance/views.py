@@ -60,6 +60,8 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(records, many=True).data)
 
     def create(self, request, *args, **kwargs):
+        if not is_administrator(request.user):
+            raise PermissionDenied("Only administrators can create manual attendance records.")
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         employee = serializer.validated_data["employee"]
@@ -86,8 +88,8 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
     def partial_update(self, request, *args, **kwargs):
         record = self.get_object()
-        if not can_manage_employee(request.user, record.employee):
-            raise PermissionDenied("Only an authorised manager can correct attendance.")
+        if not is_administrator(request.user):
+            raise PermissionDenied("Only administrators can correct attendance records.")
 
         serializer = self.get_serializer(record, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
@@ -112,7 +114,12 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 is_remote=validated.get("is_remote", record.is_remote),
             )
         with transaction.atomic():
-            updated = serializer.save(recorded_by=request.user, **validated)
+            updated = serializer.save(
+                recorded_by=request.user,
+                approved_by=None,
+                approved_at=None,
+                **validated,
+            )
             AttendanceCorrection.objects.create(
                 attendance=updated,
                 corrected_by=request.user,
@@ -126,6 +133,28 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         record = self.get_object()
         history = record.corrections.select_related("corrected_by")
         return Response(AttendanceCorrectionHistorySerializer(history, many=True).data)
+
+    @action(detail=True, methods=["post"], url_path="approve")
+    def approve(self, request, pk=None):
+        record = self.get_object()
+        if not can_manage_employee(request.user, record.employee):
+            raise PermissionDenied("Only the employee's manager or an administrator can approve attendance.")
+        if not record.check_in:
+            raise serializers.ValidationError(
+                {"attendance": "Attendance needs a check-in before it can be approved."}
+            )
+        if record.approved_at:
+            raise serializers.ValidationError(
+                {"attendance": "This attendance record is already approved."}
+            )
+        record.approved_by = request.user
+        record.approved_at = timezone.now()
+        record.save(update_fields=["approved_by", "approved_at", "updated_at"])
+        Notification.objects.create(
+            user=record.employee,
+            message=f"Your attendance for {record.work_date} was approved.",
+        )
+        return Response(AttendanceSerializer(record).data)
 
 
 class AttendanceCheckInView(APIView):
@@ -198,19 +227,18 @@ class WorkScheduleViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         employee = serializer.validated_data["employee"]
-        if not can_manage_employee(self.request.user, employee):
-            raise PermissionDenied("Only authorised managers can create employee schedules.")
+        if not is_administrator(self.request.user):
+            raise PermissionDenied("Only administrators can create employee schedules.")
         serializer.save()
 
     def perform_update(self, serializer):
-        employee = serializer.instance.employee
-        if not can_manage_employee(self.request.user, employee):
-            raise PermissionDenied("Only authorised managers can update employee schedules.")
+        if not is_administrator(self.request.user):
+            raise PermissionDenied("Only administrators can update employee schedules.")
         serializer.save()
 
     def perform_destroy(self, instance):
-        if not can_manage_employee(self.request.user, instance.employee):
-            raise PermissionDenied("Only authorised managers can delete employee schedules.")
+        if not is_administrator(self.request.user):
+            raise PermissionDenied("Only administrators can delete employee schedules.")
         instance.delete()
 
 

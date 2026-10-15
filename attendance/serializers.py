@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.db.models import Q
 from rest_framework import serializers
 
 from .models import (
@@ -15,6 +16,7 @@ User = get_user_model()
 class AttendanceSerializer(serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField()
     recorded_by_name = serializers.SerializerMethodField()
+    approved_by_name = serializers.SerializerMethodField()
     worked_minutes = serializers.SerializerMethodField()
 
     class Meta:
@@ -32,6 +34,9 @@ class AttendanceSerializer(serializers.ModelSerializer):
             "source",
             "recorded_by",
             "recorded_by_name",
+            "approved_by",
+            "approved_by_name",
+            "approved_at",
             "created_at",
             "updated_at",
         ]
@@ -43,6 +48,11 @@ class AttendanceSerializer(serializers.ModelSerializer):
     def get_recorded_by_name(self, obj):
         if obj.recorded_by:
             return obj.recorded_by.get_full_name() or obj.recorded_by.username
+        return None
+
+    def get_approved_by_name(self, obj):
+        if obj.approved_by:
+            return obj.approved_by.get_full_name() or obj.approved_by.username
         return None
 
     def get_worked_minutes(self, obj):

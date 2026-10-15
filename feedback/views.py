@@ -1,11 +1,10 @@
-from django.db.models import Q
 from django.utils import timezone
 from rest_framework import permissions, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
-from tasks.access import can_manage_employee, is_administrator
+from tasks.access import is_administrator
 from tasks.models import Notification, User
 
 from .models import EmployeeFeedback, FeedbackActionItem
@@ -30,16 +29,12 @@ class EmployeeFeedbackViewSet(viewsets.ReadOnlyModelViewSet):
         if is_administrator(user):
             return feedback
         if user.role == User.Role.IT_MANAGER:
-            return feedback.filter(
-                Q(employee=user)
-                | Q(author=user)
-                | Q(employee__manager=user)
-            ).distinct()
+            return feedback.none()
         return feedback.filter(employee=user)
 
     def create(self, request, *args, **kwargs):
-        if request.user.role not in {User.Role.IT_MANAGER, User.Role.ADMINISTRATOR} and not request.user.is_superuser:
-            raise PermissionDenied("Only managers can publish employee feedback.")
+        if not is_administrator(request.user):
+            raise PermissionDenied("Only administrators can publish employee feedback.")
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
@@ -53,8 +48,8 @@ class EmployeeFeedbackViewSet(viewsets.ReadOnlyModelViewSet):
 
     def perform_create(self, serializer):
         employee = serializer.validated_data["employee"]
-        if not can_manage_employee(self.request.user, employee):
-            raise PermissionDenied("You may only publish feedback for your direct reports.")
+        if not is_administrator(self.request.user):
+            raise PermissionDenied("Only administrators can publish employee feedback.")
         feedback = serializer.save(author=self.request.user)
         Notification.objects.create(
             user=employee,
@@ -90,9 +85,9 @@ class EmployeeFeedbackViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="actions")
     def create_action(self, request, pk=None):
+        if not is_administrator(request.user):
+            raise PermissionDenied("Only administrators can create feedback follow-up actions.")
         feedback = self.get_object()
-        if not can_manage_employee(request.user, feedback.employee):
-            raise PermissionDenied("Only the employee's manager can create a follow-up action.")
         serializer = FeedbackActionCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         assigned_to = serializer.validated_data["assigned_to"]
@@ -125,23 +120,16 @@ class FeedbackActionViewSet(viewsets.ModelViewSet):
         if is_administrator(user):
             return actions
         if user.role == User.Role.IT_MANAGER:
-            return actions.filter(
-                Q(assigned_to=user)
-                | Q(feedback__employee=user)
-                | Q(feedback__author=user)
-                | Q(feedback__employee__manager=user)
-            ).distinct()
-        return actions.filter(
-            Q(assigned_to=user) | Q(feedback__employee=user)
-        ).distinct()
+            return actions.none()
+        return actions.filter(assigned_to=user)
 
     def partial_update(self, request, *args, **kwargs):
         action_item = self.get_object()
         if (
             action_item.assigned_to_id != request.user.id
-            and not can_manage_employee(request.user, action_item.feedback.employee)
+            and not is_administrator(request.user)
         ):
-            raise PermissionDenied("Only the action owner or an authorised manager can update it.")
+            raise PermissionDenied("Only the action owner or an administrator can update it.")
         serializer = FeedbackActionStatusSerializer(
             data=request.data,
             partial=True,

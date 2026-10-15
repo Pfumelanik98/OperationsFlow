@@ -62,7 +62,7 @@ class AttendanceApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["status"], AttendanceRecord.Status.LATE)
 
-    def test_manager_correction_requires_reason_and_writes_audit_history(self):
+    def test_administrator_correction_requires_reason_and_writes_audit_history(self):
         record = AttendanceRecord.objects.create(
             employee=self.employee,
             work_date=self.today,
@@ -70,7 +70,12 @@ class AttendanceApiTests(APITestCase):
             source=AttendanceRecord.Source.MANAGER,
             recorded_by=self.manager,
         )
-        self.client.force_authenticate(user=self.manager)
+        administrator = User.objects.create_user(
+            username="attendance-admin",
+            password="test-password",
+            role=User.Role.ADMINISTRATOR,
+        )
+        self.client.force_authenticate(user=administrator)
         detail = reverse("attendance-record-detail", args=[record.id])
 
         denied = self.client.patch(
@@ -90,8 +95,88 @@ class AttendanceApiTests(APITestCase):
         )
         self.assertEqual(corrected.status_code, status.HTTP_200_OK)
         correction = AttendanceCorrection.objects.get(attendance=record)
-        self.assertEqual(correction.corrected_by, self.manager)
+        self.assertEqual(correction.corrected_by, administrator)
         self.assertEqual(correction.previous_values["status"], AttendanceRecord.Status.PENDING_REVIEW)
+
+    def test_manager_cannot_correct_attendance_and_must_use_approval(self):
+        record = AttendanceRecord.objects.create(
+            employee=self.employee,
+            work_date=self.today,
+            check_in=timezone.now(),
+            status=AttendanceRecord.Status.PRESENT,
+        )
+        self.client.force_authenticate(user=self.manager)
+
+        response = self.client.patch(
+            reverse("attendance-record-detail", args=[record.id]),
+            {
+                "status": AttendanceRecord.Status.ABSENT,
+                "correction_reason": "Incorrect attendance.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_manager_cannot_create_manual_attendance_or_schedules(self):
+        self.client.force_authenticate(user=self.manager)
+
+        attendance_response = self.client.post(
+            reverse("attendance-record-list"),
+            {},
+            format="json",
+        )
+        schedule_response = self.client.post(
+            reverse("work-schedule-list"),
+            {
+                "employee": self.employee.id,
+                "weekday": self.today.weekday(),
+                "start_time": time(9, 0),
+                "end_time": time(17, 0),
+                "effective_from": self.today,
+            },
+            format="json",
+        )
+
+        self.assertEqual(attendance_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(schedule_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(
+            AttendanceRecord.objects.filter(employee=self.employee).exists()
+        )
+        self.assertFalse(WorkSchedule.objects.filter(employee=self.employee).exists())
+
+    def test_manager_can_approve_direct_report_attendance(self):
+        record = AttendanceRecord.objects.create(
+            employee=self.employee,
+            work_date=self.today,
+            check_in=timezone.now(),
+            status=AttendanceRecord.Status.PRESENT,
+        )
+        self.client.force_authenticate(user=self.manager)
+
+        response = self.client.post(
+            reverse("attendance-record-approve", args=[record.id])
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        record.refresh_from_db()
+        self.assertEqual(record.approved_by, self.manager)
+        self.assertIsNotNone(record.approved_at)
+
+    def test_manager_cannot_approve_unrelated_employee_attendance(self):
+        record = AttendanceRecord.objects.create(
+            employee=self.other_employee,
+            work_date=self.today,
+            check_in=timezone.now(),
+            status=AttendanceRecord.Status.PRESENT,
+        )
+        self.client.force_authenticate(user=self.manager)
+
+        response = self.client.post(
+            reverse("attendance-record-approve", args=[record.id])
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_manager_cannot_view_or_edit_unrelated_attendance(self):
         record = AttendanceRecord.objects.create(
@@ -105,25 +190,7 @@ class AttendanceApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_attendance_me_endpoint_only_returns_the_current_employee_records(self):
-        own_record = AttendanceRecord.objects.create(
-            employee=self.employee,
-            work_date=self.today,
-            status=AttendanceRecord.Status.PRESENT,
-        )
-        AttendanceRecord.objects.create(
-            employee=self.other_employee,
-            work_date=self.today,
-            status=AttendanceRecord.Status.PRESENT,
-        )
-        self.client.force_authenticate(user=self.employee)
-
-        response = self.client.get(reverse("attendance-record-me"))
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual([row["id"] for row in response.data], [own_record.id])
-
-    def test_employee_cannot_view_another_employees_attendance_record(self):
+    def test_employee_cannot_view_another_employees_attendance(self):
         other_record = AttendanceRecord.objects.create(
             employee=self.other_employee,
             work_date=self.today,
@@ -137,7 +204,7 @@ class AttendanceApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_employee_report_contains_only_their_attendance(self):
+    def test_employee_attendance_report_contains_only_their_records(self):
         own_record = AttendanceRecord.objects.create(
             employee=self.employee,
             work_date=self.today,
@@ -160,6 +227,24 @@ class AttendanceApiTests(APITestCase):
             [record["id"] for record in response.data["records"]],
             [own_record.id],
         )
+
+    def test_attendance_me_endpoint_only_returns_the_current_employee_records(self):
+        own_record = AttendanceRecord.objects.create(
+            employee=self.employee,
+            work_date=self.today,
+            status=AttendanceRecord.Status.PRESENT,
+        )
+        AttendanceRecord.objects.create(
+            employee=self.other_employee,
+            work_date=self.today,
+            status=AttendanceRecord.Status.PRESENT,
+        )
+        self.client.force_authenticate(user=self.employee)
+
+        response = self.client.get(reverse("attendance-record-me"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["id"] for row in response.data], [own_record.id])
 
     def test_report_flags_missing_record_for_review_not_absence(self):
         WorkSchedule.objects.create(

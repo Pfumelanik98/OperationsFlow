@@ -76,6 +76,49 @@ class Task(models.Model):
         return self.title
 
 
+class TaskCompletionReport(models.Model):
+    class Status(models.TextChoices):
+        SUBMITTED = "submitted", "Submitted"
+        APPROVED = "approved", "Approved"
+        CHANGES_REQUESTED = "changes_requested", "Changes requested"
+
+    task = models.OneToOneField(
+        Task,
+        on_delete=models.CASCADE,
+        related_name="completion_report",
+    )
+    employee = models.ForeignKey(
+        "User",
+        on_delete=models.CASCADE,
+        related_name="task_completion_reports",
+    )
+    summary = models.TextField()
+    issues = models.TextField(blank=True)
+    time_spent_minutes = models.PositiveIntegerField(null=True, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.SUBMITTED,
+    )
+    review_note = models.TextField(blank=True)
+    reviewed_by = models.ForeignKey(
+        "User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_task_reports",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        return f"Completion report for {self.task.title}"
+
+
 class TaskComment(models.Model):
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="comments")
     author = models.ForeignKey("User", on_delete=models.CASCADE, related_name="task_comments")

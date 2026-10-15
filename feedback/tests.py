@@ -21,6 +21,11 @@ class FeedbackApiTests(APITestCase):
             password="Password123!",
             role=User.Role.IT_MANAGER,
         )
+        self.administrator = User.objects.create_user(
+            username="feedback-admin",
+            password="test-password",
+            role=User.Role.ADMINISTRATOR,
+        )
         self.employee = User.objects.create_user(
             username="feedback-employee",
             password="Password123!",
@@ -45,7 +50,7 @@ class FeedbackApiTests(APITestCase):
         response = self.client.get(reverse("feedback-detail", args=[self.feedback.id]))
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_employee_feedback_list_contains_only_their_private_feedback(self):
+    def test_employee_feedback_list_and_detail_are_private(self):
         other_feedback = EmployeeFeedback.objects.create(
             employee=self.unrelated,
             author=self.manager,
@@ -55,14 +60,37 @@ class FeedbackApiTests(APITestCase):
         )
         self.client.force_authenticate(user=self.employee)
 
-        response = self.client.get(reverse("feedback-me"))
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual([item["id"] for item in response.data], [self.feedback.id])
+        listing = self.client.get(reverse("feedback-me"))
         hidden = self.client.get(
             reverse("feedback-detail", args=[other_feedback.id])
         )
+
+        self.assertEqual(listing.status_code, status.HTTP_200_OK)
+        self.assertEqual([item["id"] for item in listing.data], [self.feedback.id])
         self.assertEqual(hidden.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_employee_action_list_contains_only_actions_assigned_to_them(self):
+        own_action = FeedbackActionItem.objects.create(
+            feedback=self.feedback,
+            assigned_to=self.employee,
+            title="Prepare troubleshooting notes",
+        )
+        FeedbackActionItem.objects.create(
+            feedback=self.feedback,
+            assigned_to=self.manager,
+            title="Review troubleshooting notes",
+        )
+        self.client.force_authenticate(user=self.employee)
+
+        listing = self.client.get(reverse("feedback-action-list"))
+        feedback = self.client.get(reverse("feedback-me"))
+
+        self.assertEqual(listing.status_code, status.HTTP_200_OK)
+        self.assertEqual([item["id"] for item in listing.data], [own_action.id])
+        self.assertEqual(
+            [item["id"] for item in feedback.data[0]["action_items"]],
+            [own_action.id],
+        )
 
     def test_employee_can_acknowledge_without_changing_feedback(self):
         self.client.force_authenticate(user=self.employee)
@@ -90,8 +118,8 @@ class FeedbackApiTests(APITestCase):
             "I will prepare the notes this week.",
         )
 
-    def test_manager_publishing_feedback_notifies_employee(self):
-        self.client.force_authenticate(user=self.manager)
+    def test_administrator_publishing_feedback_notifies_employee(self):
+        self.client.force_authenticate(user=self.administrator)
         response = self.client.post(
             reverse("feedback-list"),
             {
@@ -110,22 +138,22 @@ class FeedbackApiTests(APITestCase):
             ).exists()
         )
 
-    def test_manager_cannot_publish_feedback_for_an_unrelated_employee(self):
+    def test_manager_cannot_publish_feedback(self):
         self.client.force_authenticate(user=self.manager)
         response = self.client.post(
             reverse("feedback-list"),
             {
-                "employee": self.unrelated.id,
+                "employee": self.employee.id,
                 "category": EmployeeFeedback.Category.COACHING,
-                "content": "Private information.",
+                "content": "Feedback should be administrator-managed.",
                 "feedback_date": "2026-10-13",
             },
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_manager_can_create_a_private_follow_up_for_a_direct_report(self):
-        self.client.force_authenticate(user=self.manager)
+    def test_administrator_can_create_a_private_follow_up(self):
+        self.client.force_authenticate(user=self.administrator)
 
         response = self.client.post(
             reverse("feedback-create-action", args=[self.feedback.id]),
@@ -144,6 +172,34 @@ class FeedbackApiTests(APITestCase):
                 message__contains="Document troubleshooting steps",
             ).exists()
         )
+
+    def test_manager_cannot_view_direct_report_feedback(self):
+        self.client.force_authenticate(user=self.manager)
+
+        listing = self.client.get(reverse("feedback-list"))
+        hidden = self.client.get(
+            reverse("feedback-detail", args=[self.feedback.id])
+        )
+
+        self.assertEqual(listing.status_code, status.HTTP_200_OK)
+        self.assertEqual(listing.data, [])
+        self.assertEqual(hidden.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_manager_cannot_create_follow_up_actions(self):
+        self.client.force_authenticate(user=self.manager)
+
+        response = self.client.post(
+            reverse("feedback-create-action", args=[self.feedback.id]),
+            {
+                "title": "Document troubleshooting steps",
+                "assigned_to": self.employee.id,
+                "due_date": "2026-10-20",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(self.feedback.action_items.exists())
 
     def test_employee_can_update_status_of_assigned_action(self):
         action_item = FeedbackActionItem.objects.create(

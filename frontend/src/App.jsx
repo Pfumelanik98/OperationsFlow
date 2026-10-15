@@ -2,6 +2,26 @@ import { useEffect, useState } from 'react';
 
 const API_BASE_URL = 'http://localhost:8000/api';
 const API_V1_URL = `${API_BASE_URL}/v1`;
+const pathViews = {
+  '/employee-dashboard': 'workspace',
+  '/my-workspace': 'workspace',
+  '/team-dashboard': 'dashboard',
+  '/administration': 'dashboard',
+  '/tasks': 'tasks',
+  '/new-task': 'new-task',
+  '/attendance': 'attendance',
+  '/feedback': 'feedback',
+  '/task-reports': 'task-reports',
+};
+const pathsForViews = {
+  workspace: '/employee-dashboard',
+  dashboard: '/team-dashboard',
+  tasks: '/tasks',
+  'new-task': '/new-task',
+  attendance: '/attendance',
+  feedback: '/feedback',
+  'task-reports': '/task-reports',
+};
 const localDate = () => {
   const now = new Date();
   return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
@@ -41,13 +61,16 @@ function App() {
   const [token, setToken] = useState(() => localStorage.getItem('opsflow-token') || '');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [loginRole, setLoginRole] = useState('');
   const [tasks, setTasks] = useState([]);
   const [profile, setProfile] = useState(null);
+  const [isLoading, setIsLoading] = useState(Boolean(token));
   const [attendance, setAttendance] = useState([]);
   const [attendanceReport, setAttendanceReport] = useState(null);
   const [leaveRequests, setLeaveRequests] = useState([]);
   const [feedback, setFeedback] = useState([]);
   const [feedbackActions, setFeedbackActions] = useState([]);
+  const [taskReports, setTaskReports] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [operationSummary, setOperationSummary] = useState([]);
   const [notifications, setNotifications] = useState([]);
@@ -71,9 +94,7 @@ function App() {
     grace_period_minutes: 10,
     effective_from: localDate(),
   });
-  const [view, setView] = useState(() => (
-    window.location.pathname === '/my-workspace' ? 'workspace' : 'dashboard'
-  ));
+  const [view, setView] = useState(() => pathViews[window.location.pathname] || 'dashboard');
   const [form, setForm] = useState({
     title: '',
     description: '',
@@ -85,49 +106,29 @@ function App() {
 
   const refreshData = async (authToken) => {
     const userData = await apiRequest(`${API_V1_URL}/accounts/me/`, authToken);
-    const managementAccess = userData.is_superuser
-      || userData.role === 'administrator'
-      || userData.role === 'it_manager';
-    const taskUrl = managementAccess
-      ? `${API_BASE_URL}/tasks/`
-      : `${API_BASE_URL}/tasks/my-tasks/`;
-    const attendanceUrl = managementAccess
-      ? `${API_V1_URL}/attendance/`
-      : `${API_V1_URL}/attendance/me/`;
-    const feedbackUrl = managementAccess
-      ? `${API_V1_URL}/feedback/`
-      : `${API_V1_URL}/feedback/me/`;
-    const dashboardRequest = managementAccess
-      ? apiRequest(`${API_V1_URL}/dashboard/employee-operations/`, authToken)
-      : Promise.resolve({ employees: [] });
-    const [taskData, attendanceData, leaveData, feedbackData, actionData, dashboardData, notificationData, userList] = await Promise.all([
-      apiRequest(taskUrl, authToken),
-      apiRequest(attendanceUrl, authToken),
+    const isEmployeeAccount = userData.role === 'it_employee' && !userData.is_superuser;
+    const [taskData, attendanceData, leaveData, feedbackData, actionData, reportData, dashboardData, notificationData] = await Promise.all([
+      apiRequest(`${API_BASE_URL}/tasks/${isEmployeeAccount ? 'my-tasks/' : ''}`, authToken),
+      apiRequest(`${API_V1_URL}/attendance/`, authToken),
       apiRequest(`${API_V1_URL}/attendance/leave-requests/`, authToken),
-      apiRequest(feedbackUrl, authToken),
+      apiRequest(`${API_V1_URL}/feedback/`, authToken),
       apiRequest(`${API_V1_URL}/feedback/actions/`, authToken),
-      dashboardRequest,
+      apiRequest(`${API_BASE_URL}/task-reports/`, authToken),
+      apiRequest(`${API_V1_URL}/dashboard/employee-operations/`, authToken),
       apiRequest(`${API_BASE_URL}/notifications/`, authToken),
-      apiRequest(`${API_BASE_URL}/users/`, authToken),
     ]);
+    const userList = await apiRequest(`${API_BASE_URL}/users/`, authToken);
     setTasks(taskData);
     setProfile(userData);
     setAttendance(attendanceData);
     setLeaveRequests(leaveData);
     setFeedback(feedbackData);
     setFeedbackActions(actionData);
+    setTaskReports(reportData);
     setEmployees(userList);
     setOperationSummary(dashboardData.employees);
     setNotifications(notificationData);
-    if (!profile) {
-      const homeView = managementAccess ? 'dashboard' : 'workspace';
-      setView(homeView);
-      window.history.replaceState(
-        null,
-        '',
-        managementAccess ? '/dashboard' : '/my-workspace',
-      );
-    }
+    return userData;
   };
 
   const handleMarkNotificationRead = async (id) => {
@@ -155,11 +156,83 @@ function App() {
   useEffect(() => {
     if (!token) {
       setTasks([]);
+      setProfile(null);
+      setIsLoading(false);
       return;
     }
 
-    fetchTasks();
+    let cancelled = false;
+    setIsLoading(true);
+    refreshData(token)
+      .catch((error) => {
+        if (!cancelled) setMessage(error.message);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [token]);
+
+  const isAdministrator = Boolean(profile?.is_superuser || profile?.role === 'administrator');
+  const isEmployee = profile?.role === 'it_employee' && !isAdministrator;
+  const isManager = isAdministrator || profile?.role === 'it_manager';
+
+  const navigate = (nextView) => {
+    const safeView = isEmployee ? 'workspace' : nextView;
+    const route = safeView === 'dashboard' && isAdministrator
+      ? '/administration'
+      : pathsForViews[safeView] || '/';
+    window.history.pushState({}, '', route);
+    setView(safeView);
+  };
+
+  useEffect(() => {
+    if (token && profile) {
+      const homeView = isEmployee ? 'workspace' : 'dashboard';
+      const homePath = homeView === 'dashboard' && isAdministrator
+        ? '/administration'
+        : pathsForViews[homeView];
+      window.history.replaceState({}, '', homePath);
+      setView(homeView);
+    } else if (!token) {
+      window.history.replaceState({}, '', '/');
+      setView('dashboard');
+    }
+  }, [token, profile?.id, profile?.role, profile?.is_superuser]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const requestedView = pathViews[window.location.pathname] || 'dashboard';
+      if (isEmployee && requestedView !== 'workspace') {
+        window.history.replaceState({}, '', '/my-workspace');
+        setView('workspace');
+        return;
+      }
+      if (
+        profile?.role === 'it_manager'
+        && !profile.is_superuser
+        && window.location.pathname === '/administration'
+      ) {
+        window.history.replaceState({}, '', '/team-dashboard');
+        setView('dashboard');
+        return;
+      }
+      if (
+        profile?.role === 'it_manager'
+        && !profile.is_superuser
+        && !['dashboard', 'attendance', 'task-reports'].includes(requestedView)
+      ) {
+        window.history.replaceState({}, '', '/team-dashboard');
+        setView('dashboard');
+        return;
+      }
+      setView(requestedView);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [isEmployee, profile?.role, profile?.is_superuser]);
 
   const handleLogin = async (event) => {
     event.preventDefault();
@@ -169,54 +242,20 @@ function App() {
         body: JSON.stringify({ username, password }),
       });
       const userData = await apiRequest(`${API_V1_URL}/accounts/me/`, payload.token);
-      const managementAccess = userData.is_superuser
-        || userData.role === 'administrator'
-        || userData.role === 'it_manager';
-      const homeView = managementAccess ? 'dashboard' : 'workspace';
-      setProfile(userData);
-      setView(homeView);
-      window.history.replaceState(
-        null,
-        '',
-        managementAccess ? '/dashboard' : '/my-workspace',
-      );
+      const actualRole = userData.is_superuser || userData.role === 'administrator'
+        ? 'administrator'
+        : userData.role;
+      if (actualRole !== loginRole) {
+        throw new Error('The selected account type does not match your user account.');
+      }
+      setProfile(null);
+      setIsLoading(true);
       setToken(payload.token);
       localStorage.setItem('opsflow-token', payload.token);
-      setPassword('');
-      setMessage('Signed in successfully.');
+      setMessage(`Signed in successfully as ${loginRole === 'it_employee' ? 'Employee' : loginRole === 'it_manager' ? 'Manager' : 'Administrator'}.`);
     } catch (error) {
       setMessage(error.message);
     }
-  };
-
-  const handleTaskStatus = async (id, status) => {
-    try {
-      await apiRequest(`${API_BASE_URL}/tasks/${id}/`, token, {
-        method: 'PATCH',
-        body: JSON.stringify({ status }),
-      });
-      setMessage('Task status updated.');
-      await refreshData(token);
-    } catch (error) {
-      setMessage(error.message);
-    }
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem('opsflow-token');
-    setToken('');
-    setProfile(null);
-    setTasks([]);
-    setAttendance([]);
-    setLeaveRequests([]);
-    setFeedback([]);
-    setFeedbackActions([]);
-    setEmployees([]);
-    setOperationSummary([]);
-    setNotifications([]);
-    setView('dashboard');
-    window.history.replaceState(null, '', '/');
-    setMessage('Signed out.');
   };
 
   const handleCreateTask = async (event) => {
@@ -235,9 +274,70 @@ function App() {
         body: JSON.stringify(payload),
       });
       setForm({ title: '', description: '', priority: 'medium', due_date: '', assignee: '' });
-      setView('dashboard');
+      navigate('dashboard');
       setMessage('Task created successfully.');
       fetchTasks();
+    } catch (error) {
+      setMessage(error.message);
+    }
+  };
+
+  const handleCompletionReport = async (event, task) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const existingReport = taskReports.find((report) => report.task === task.id);
+    const body = {
+      summary: data.get('summary'),
+      issues: data.get('issues'),
+      time_spent_minutes: data.get('time_spent_minutes') || null,
+    };
+    try {
+      if (existingReport?.status === 'changes_requested') {
+        await apiRequest(`${API_BASE_URL}/task-reports/${existingReport.id}/`, token, {
+          method: 'PATCH',
+          body: JSON.stringify(body),
+        });
+        setMessage('Completion report resubmitted for review.');
+      } else {
+        await apiRequest(`${API_BASE_URL}/task-reports/`, token, {
+          method: 'POST',
+          body: JSON.stringify({ task: task.id, ...body }),
+        });
+        setMessage('Completion report submitted for manager approval.');
+      }
+      await refreshData(token);
+    } catch (error) {
+      setMessage(error.message);
+    }
+  };
+
+  const handleTaskReportReview = async (event, report, status) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget.form);
+    const reviewNote = data.get('review_note') || '';
+    if (status === 'changes_requested' && !reviewNote.trim()) {
+      setMessage('Add a note explaining the requested changes.');
+      return;
+    }
+    try {
+      await apiRequest(`${API_BASE_URL}/task-reports/${report.id}/review/`, token, {
+        method: 'POST',
+        body: JSON.stringify({ status, review_note: reviewNote }),
+      });
+      setMessage(status === 'approved' ? 'Task report approved.' : 'Changes requested from employee.');
+      await refreshData(token);
+    } catch (error) {
+      setMessage(error.message);
+    }
+  };
+
+  const handleAttendanceApproval = async (record) => {
+    try {
+      await apiRequest(`${API_V1_URL}/attendance/${record.id}/approve/`, token, {
+        method: 'POST',
+      });
+      setMessage('Employee attendance approved.');
+      await refreshData(token);
     } catch (error) {
       setMessage(error.message);
     }
@@ -410,8 +510,6 @@ function App() {
     }
   };
 
-  const isManager = profile?.is_superuser || profile?.role === 'administrator' || profile?.role === 'it_manager';
-
   const pendingCount = tasks.filter((task) => task.status !== 'completed').length;
   const overdueCount = tasks.filter((task) => task.status !== 'completed' && task.due_date && task.due_date < localDate()).length;
   const lowPriorityCount = tasks.filter((task) => task.priority === 'low').length;
@@ -423,35 +521,44 @@ function App() {
         <div className="brand-block">
           <div className="brand-mark">OF</div>
           <div>
-            <h1>OperationsFlow</h1>
+            <h1>Management Operations flow</h1>
             <p>Internal IT workflow</p>
           </div>
         </div>
 
         <nav className="nav">
-          {token && profile && (isManager ? (
+          {token && profile && isEmployee ? (
+            <button className={view === 'workspace' ? 'active' : ''} onClick={() => navigate('workspace')}>
+              Employee dashboard
+            </button>
+          ) : token && profile ? (
             <>
-              <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}>
-                Team dashboard
+              <button className={view === 'dashboard' ? 'active' : ''} onClick={() => navigate('dashboard')}>
+                {isAdministrator ? 'Administration' : 'Team dashboard'}
               </button>
-              <button className={view === 'tasks' ? 'active' : ''} onClick={() => setView('tasks')}>
-                Team tasks
-              </button>
-              <button className={view === 'new-task' ? 'active' : ''} onClick={() => setView('new-task')}>
-                New task
-              </button>
-              <button className={view === 'attendance' ? 'active' : ''} onClick={() => setView('attendance')}>
-                Attendance & leave
-              </button>
-              <button className={view === 'feedback' ? 'active' : ''} onClick={() => setView('feedback')}>
-                Feedback & development
+              {isManager && (
+                <button className={view === 'task-reports' ? 'active' : ''} onClick={() => navigate('task-reports')}>
+                  Task reports
+                </button>
+              )}
+              {isAdministrator && (
+                <>
+                  <button className={view === 'tasks' ? 'active' : ''} onClick={() => navigate('tasks')}>
+                    Active tasks
+                  </button>
+                  <button className={view === 'new-task' ? 'active' : ''} onClick={() => navigate('new-task')}>
+                    Assign task
+                  </button>
+                  <button className={view === 'feedback' ? 'active' : ''} onClick={() => navigate('feedback')}>
+                    Feedback & development
+                  </button>
+                </>
+              )}
+              <button className={view === 'attendance' ? 'active' : ''} onClick={() => navigate('attendance')}>
+                {isManager ? 'Attendance approvals' : 'Attendance & leave'}
               </button>
             </>
-          ) : (
-            <button className={view === 'workspace' ? 'active' : ''} onClick={() => setView('workspace')}>
-              My Workspace
-            </button>
-          ))}
+          ) : null}
         </nav>
       </aside>
 
@@ -459,21 +566,29 @@ function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">Operations</p>
-            <h2>{token && profile && !isManager ? 'My Workspace' : 'Service desk overview'}</h2>
+            <h2>{isEmployee ? 'Employee dashboard' : isAdministrator ? 'Administration' : 'Team dashboard'}</h2>
           </div>
           {!token ? (
             <form className="login-form" onSubmit={handleLogin}>
-              <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Username" />
-              <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Password" />
+              <select aria-label="Sign in as" value={loginRole} onChange={(event) => setLoginRole(event.target.value)} required>
+                <option value="" disabled>Choose account type</option>
+                <option value="administrator">Administrator</option>
+                <option value="it_manager">Manager</option>
+                <option value="it_employee">Employee</option>
+              </select>
+              <input aria-label="Username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Username" required />
+              <input aria-label="Password" autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Password" required />
               <button type="submit">Sign in</button>
             </form>
           ) : (
             <div className="account-chip">
               <span>{profile?.username}</span>
-              <button className="logout" onClick={handleLogout}>Sign out</button>
+            <button className="logout" onClick={() => { localStorage.removeItem('opsflow-token'); setToken(''); setProfile(null); setView('dashboard'); setMessage('Signed out.'); }}>
+              Sign out
+            </button>
             </div>
           )}
-          {token && profile && isManager && (
+          {token && profile && !isEmployee && (
             <div className="panel wide-panel">
               <h3>Notifications</h3>
               {notifications.length ? notifications.slice(0, 8).map((notification) => (
@@ -488,107 +603,117 @@ function App() {
 
         {message && <div className="notice">{message}</div>}
 
+        {token && isLoading && <div className="panel" role="status">Loading your private workspace…</div>}
         {!token && (
           <section className="panel">
-            <h3>Sign in to OperationsFlow</h3>
-            <p className="muted">Your tasks, attendance, feedback and notifications are available after you sign in.</p>
+            <h3>Sign in to Management Operations flow</h3>
+            <p className="muted">Choose your account type. Your own role determines which dashboard and information you can access.</p>
           </section>
         )}
 
-        {view === 'workspace' && token && profile && !isManager && (
-          <section className="content-grid">
-            <div className="metric-card">
-              <span>My active tasks</span>
-              <strong>{pendingCount}</strong>
-            </div>
-            <div className="metric-card">
-              <span>My overdue tasks</span>
-              <strong>{overdueCount}</strong>
-            </div>
-            <div className="metric-card">
-              <span>Unread notifications</span>
-              <strong>{notifications.filter((notification) => !notification.is_read).length}</strong>
+        {view === 'workspace' && token && profile && isEmployee && !isLoading && (
+          <section className="workspace-grid">
+            <div className="panel workspace-welcome">
+              <p className="eyebrow">Employee dashboard</p>
+              <h3>Welcome, {profile.first_name || profile.username}</h3>
+              <p className="muted">Your tasks, attendance, feedback and notifications in one place.</p>
             </div>
 
-            <div className="panel wide-panel">
-              <h3>My Tasks</h3>
-              <div className="task-list">
-                {tasks.map((task) => (
-                  <article className="task-item" key={task.id}>
-                    <div className="task-header">
-                      <strong>{task.title}</strong>
-                      <span className="pill">{task.priority}</span>
-                    </div>
-                    <p>{task.description}</p>
-                    <div className="task-meta">
-                      <span>Due: {task.due_date || 'No due date'}</span>
-                      {task.due_date && task.due_date < localDate() && task.status !== 'completed' && (
-                        <span className="pill">Overdue</span>
-                      )}
-                    </div>
-                    <label className="task-status-label">
-                      Progress
-                      <select
-                        className="task-status-select"
-                        value={task.status}
-                        onChange={(event) => handleTaskStatus(task.id, event.target.value)}
-                      >
-                        <option value="new">New</option>
-                        <option value="assigned">Assigned</option>
-                        <option value="in_progress">In progress</option>
-                        <option value="blocked">Blocked</option>
-                        <option value="completed">Completed</option>
-                      </select>
-                    </label>
-                  </article>
-                ))}
-                {!tasks.length && <p className="muted">No tasks are currently assigned to you.</p>}
+            <section className="panel workspace-section">
+              <div className="section-heading">
+                <div>
+                  <h3>My Tasks</h3>
+                  <p className="muted">{pendingCount} active · {overdueCount} overdue</p>
+                </div>
               </div>
-            </div>
+              {tasks.length ? (
+                <div className="task-list">
+                  {tasks.map((task) => {
+                    const overdue = task.status !== 'completed' && task.due_date && task.due_date < localDate();
+                    const completionReport = taskReports.find((report) => report.task === task.id);
+                    return (
+                      <article className="task-item" key={task.id}>
+                        <div className="task-header">
+                          <strong>{task.title}</strong>
+                          <span className="pill">{task.priority}</span>
+                        </div>
+                        <p>{task.description}</p>
+                        <div className="task-meta">
+                          <span>Due: {task.due_date || 'No deadline'}{overdue ? ' · Overdue' : ''}</span>
+                          <span>Assigned by: {task.requester_name || 'Operations'}</span>
+                        </div>
+                        <p className="muted">Status: {task.status.replaceAll('_', ' ')}</p>
+                        {completionReport && completionReport.status !== 'changes_requested' ? (
+                          <div className="report-box">
+                            <strong>Completion report: {completionReport.status.replaceAll('_', ' ')}</strong>
+                            <p>{completionReport.summary}</p>
+                            {completionReport.issues && <p>Issues: {completionReport.issues}</p>}
+                            {completionReport.review_note && <p>Manager note: {completionReport.review_note}</p>}
+                          </div>
+                        ) : task.status !== 'completed' ? (
+                          <form className="task-form compact-form" onSubmit={(event) => handleCompletionReport(event, task)}>
+                            <strong>{completionReport ? 'Update report requested by your manager' : 'Submit completion report'}</strong>
+                            {completionReport?.review_note && <p className="muted">Manager note: {completionReport.review_note}</p>}
+                            <label>Work completed
+                              <textarea name="summary" rows="3" defaultValue={completionReport?.summary || ''} required />
+                            </label>
+                            <label>Issues or blockers (optional)
+                              <textarea name="issues" rows="2" defaultValue={completionReport?.issues || ''} />
+                            </label>
+                            <label>Time spent (minutes, optional)
+                              <input
+                                name="time_spent_minutes"
+                                type="number"
+                                min="0"
+                                defaultValue={completionReport?.time_spent_minutes ?? ''}
+                              />
+                            </label>
+                            <button type="submit">{completionReport ? 'Resubmit report' : 'Submit for approval'}</button>
+                          </form>
+                        ) : null}
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : <p className="muted">You have no assigned tasks.</p>}
+            </section>
 
-            <div className="panel wide-panel">
+            <section className="panel workspace-section">
               <h3>My Attendance</h3>
-              <p>
-                Today: {todayAttendance
-                  ? `${todayAttendance.status}${todayAttendance.is_remote ? ' · remote' : ''}`
-                  : 'No attendance record yet.'}
-              </p>
-              {todayAttendance && (
-                <p className="muted">
-                  Check-in: {todayAttendance.check_in ? new Date(todayAttendance.check_in).toLocaleTimeString() : 'Not recorded'}
-                  {' · '}
-                  Check-out: {todayAttendance.check_out ? new Date(todayAttendance.check_out).toLocaleTimeString() : 'Not recorded'}
-                </p>
-              )}
               <div className="button-row">
-                <button disabled={Boolean(todayAttendance?.check_in)} onClick={() => handleAttendanceAction('check-in')}>
-                  Check in
-                </button>
-                <button
-                  className="secondary"
-                  disabled={!todayAttendance?.check_in || Boolean(todayAttendance?.check_out)}
-                  onClick={() => handleAttendanceAction('check-out')}
-                >
-                  Check out
-                </button>
+                <button onClick={() => handleAttendanceAction('check-in')}>Check in</button>
+                <button className="secondary" onClick={() => handleAttendanceAction('check-out')}>Check out</button>
               </div>
+              {todayAttendance ? (
+                <p>
+                  Today: {todayAttendance.status}
+                  {' · In: '}{todayAttendance.check_in
+                    ? new Date(todayAttendance.check_in).toLocaleTimeString()
+                    : 'Not recorded'}
+                  {' · Out: '}{todayAttendance.check_out
+                    ? new Date(todayAttendance.check_out).toLocaleTimeString()
+                    : 'Not recorded'}
+                </p>
+              ) : <p className="muted">No attendance recorded today.</p>}
               <h4>Recent history</h4>
-              {attendance.slice(0, 5).map((record) => (
-                <p className="task-meta" key={record.id}>
-                  {record.work_date} · {record.status}
-                  {record.check_in ? ` · In ${new Date(record.check_in).toLocaleTimeString()}` : ''}
-                  {record.check_out ? ` · Out ${new Date(record.check_out).toLocaleTimeString()}` : ''}
-                </p>
-              ))}
-              {!attendance.length && <p className="muted">Your attendance history will appear here.</p>}
-              <h4>My Leave Requests</h4>
-              {leaveRequests.length ? leaveRequests.map((leave) => (
-                <p className="task-meta" key={leave.id}>
-                  {leave.start_date} to {leave.end_date} · {leave.leave_type} · {leave.status}
-                </p>
-              )) : <p className="muted">No leave requests.</p>}
+              {attendance.length ? (
+                <ul className="workspace-list">
+                  {attendance.slice(0, 5).map((record) => (
+                    <li key={record.id}>
+                      <span>{record.work_date}</span>
+                      <span className="pill">{record.status}</span>
+                      <span>{record.check_in ? new Date(record.check_in).toLocaleTimeString() : 'No check-in'}</span>
+                      <span>{record.check_out ? new Date(record.check_out).toLocaleTimeString() : 'No check-out'}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : <p className="muted">No attendance history yet.</p>}
+            </section>
+
+            <section className="panel workspace-section">
+              <h3>My Leave</h3>
+              <p className="muted">Request time off and track the decision separately from your attendance.</p>
               <form className="task-form compact-form" onSubmit={handleLeaveRequest}>
-                <h4>Request leave</h4>
                 <div className="form-row">
                   <label>Start date<input type="date" value={leaveForm.start_date} onChange={(event) => setLeaveForm({ ...leaveForm, start_date: event.target.value })} required /></label>
                   <label>End date<input type="date" value={leaveForm.end_date} onChange={(event) => setLeaveForm({ ...leaveForm, end_date: event.target.value })} required /></label>
@@ -600,71 +725,60 @@ function App() {
                 </label>
                 <button type="submit">Submit leave request</button>
               </form>
-            </div>
+              <h4>My leave requests</h4>
+              {leaveRequests.length ? leaveRequests.map((leave) => (
+                <p key={leave.id}>{leave.start_date} to {leave.end_date} · {leave.leave_type} · {leave.status}</p>
+              )) : <p className="muted">No leave requests.</p>}
+            </section>
 
-            <div className="panel wide-panel">
+            <section className="panel workspace-section">
               <h3>My Feedback</h3>
-              <div className="task-list">
-                {feedback.map((item) => (
-                  <article className="task-item" key={item.id}>
-                    <div className="task-header">
-                      <strong>{item.category.replaceAll('_', ' ')}</strong>
-                      <span className="pill">{item.feedback_date}</span>
-                    </div>
-                    <p>{item.content}</p>
-                    <p className="muted">From {item.author_name}</p>
-                    {item.acknowledged_at
-                      ? <p className="muted">Acknowledged</p>
-                      : <button className="secondary" onClick={() => handleFeedbackAcknowledgement(item.id)}>Acknowledge</button>}
-                    {item.employee_response && <p>Your response: {item.employee_response}</p>}
-                    <form className="task-form compact-form" onSubmit={(event) => handleFeedbackResponse(event, item.id)}>
-                      <label>Your response
-                        <textarea
-                          value={responseDrafts[item.id] ?? item.employee_response ?? ''}
-                          onChange={(event) => setResponseDrafts({ ...responseDrafts, [item.id]: event.target.value })}
-                          rows="2"
-                          required
-                        />
-                      </label>
-                      <button type="submit">Save response</button>
-                    </form>
-                    {!!item.action_items?.length && (
-                      <ul className="action-list">
-                        {item.action_items.map((action) => (
-                          <li key={action.id}>
-                            <span>{action.title} · {action.due_date || 'No due date'}</span>
-                            {action.assigned_to === profile.id ? (
-                              <select value={action.status} onChange={(event) => handleActionStatus(action.id, event.target.value)}>
-                                <option value="open">Open</option><option value="in_progress">In progress</option><option value="completed">Completed</option>
-                              </select>
-                            ) : <span className="pill">{action.status}</span>}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </article>
-                ))}
-                {!feedback.length && <p className="muted">No private feedback is available to you.</p>}
-              </div>
-              {!!feedbackActions.filter((action) => action.assigned_to === profile.id).length && (
-                <>
-                  <h4>Development actions assigned to me</h4>
-                  <div className="task-list">
+              {feedback.filter((item) => item.employee === profile.id).length ? (
+                <div className="task-list">
+                  {feedback.filter((item) => item.employee === profile.id).map((item) => (
+                    <article className="task-item" key={item.id}>
+                      <div className="task-header">
+                        <strong>{item.category.replaceAll('_', ' ')}</strong>
+                        <span className="pill">{item.acknowledged_at ? 'acknowledged' : 'awaiting acknowledgement'}</span>
+                      </div>
+                      <p>{item.content}</p>
+                      <div className="task-meta"><span>From: {item.author_name}</span><span>Date: {item.feedback_date}</span></div>
+                      {!item.acknowledged_at && <button className="secondary" onClick={() => handleFeedbackAcknowledgement(item.id)}>Acknowledge</button>}
+                      {item.employee_response && <p><strong>Your response:</strong> {item.employee_response}</p>}
+                      <form className="task-form compact-form" onSubmit={(event) => handleFeedbackResponse(event, item.id)}>
+                        <label>Response
+                          <textarea
+                            rows="2"
+                            value={responseDrafts[item.id] ?? item.employee_response ?? ''}
+                            onChange={(event) => setResponseDrafts({ ...responseDrafts, [item.id]: event.target.value })}
+                          />
+                        </label>
+                        <button type="submit">Save response</button>
+                      </form>
+                    </article>
+                  ))}
+                </div>
+              ) : <p className="muted">No feedback is available for you.</p>}
+              {feedbackActions.some((action) => action.assigned_to === profile.id) && (
+                <div>
+                  <h4>Development actions assigned to you</h4>
+                  <ul className="action-list">
                     {feedbackActions.filter((action) => action.assigned_to === profile.id).map((action) => (
-                      <article className="task-item" key={action.id}>
-                        <div className="task-header"><strong>{action.title}</strong><span className="pill">{action.status}</span></div>
-                        <p>Due: {action.due_date || 'No due date'}</p>
+                      <li key={action.id}>
+                        <span>{action.title} · {action.due_date || 'No due date'}</span>
                         <select value={action.status} onChange={(event) => handleActionStatus(action.id, event.target.value)}>
-                          <option value="open">Open</option><option value="in_progress">In progress</option><option value="completed">Completed</option>
+                          <option value="open">Open</option>
+                          <option value="in_progress">In progress</option>
+                          <option value="completed">Completed</option>
                         </select>
-                      </article>
+                      </li>
                     ))}
-                  </div>
-                </>
+                  </ul>
+                </div>
               )}
-            </div>
+            </section>
 
-            <div className="panel wide-panel">
+            <section className="panel workspace-section">
               <h3>My Notifications</h3>
               {notifications.length ? notifications.map((notification) => (
                 <div className={`notification-row ${notification.is_read ? 'read' : ''}`} key={notification.id}>
@@ -672,11 +786,11 @@ function App() {
                   {!notification.is_read && <button className="secondary" onClick={() => handleMarkNotificationRead(notification.id)}>Mark read</button>}
                 </div>
               )) : <p className="muted">No notifications yet.</p>}
-            </div>
+            </section>
           </section>
         )}
 
-        {view === 'dashboard' && token && profile && isManager && (
+        {view === 'dashboard' && token && profile && !isEmployee && !isLoading && (
           <section className="content-grid">
             <div className="metric-card">
               <span>Total active</span>
@@ -728,7 +842,47 @@ function App() {
           </section>
         )}
 
-        {view === 'tasks' && token && profile && isManager && (
+        {view === 'task-reports' && token && profile && !isEmployee && (
+          <section className="panel">
+            <h3>Employee task completion reports</h3>
+            {taskReports.length ? (
+              <div className="task-list">
+                {taskReports.map((report) => (
+                  <article className="task-item" key={report.id}>
+                    <div className="task-header">
+                      <strong>{report.task_title}</strong>
+                      <span className="pill">{report.status.replaceAll('_', ' ')}</span>
+                    </div>
+                    <p><strong>Employee:</strong> {report.employee_name}</p>
+                    <p>{report.summary}</p>
+                    {report.issues && <p><strong>Issues:</strong> {report.issues}</p>}
+                    {report.time_spent_minutes !== null && (
+                      <p><strong>Time spent:</strong> {report.time_spent_minutes} minutes</p>
+                    )}
+                    {report.review_note && <p><strong>Previous review note:</strong> {report.review_note}</p>}
+                    {report.status === 'submitted' && (
+                      <form className="task-form compact-form" onSubmit={(event) => event.preventDefault()}>
+                        <label>Review note
+                          <textarea name="review_note" rows="2" required={false} />
+                        </label>
+                        <div className="button-row">
+                          <button type="button" onClick={(event) => handleTaskReportReview(event, report, 'approved')}>Approve report</button>
+                          <button type="button" className="secondary" onClick={(event) => handleTaskReportReview(event, report, 'changes_requested')}>Request changes</button>
+                        </div>
+                      </form>
+                    )}
+                    {report.reviewed_by_name && (
+                      <p className="muted">Reviewed by {report.reviewed_by_name}{report.reviewed_at ? ` · ${new Date(report.reviewed_at).toLocaleString()}` : ''}</p>
+                    )}
+                  </article>
+                ))}
+              </div>
+            ) : <p className="muted">No completion reports have been submitted.</p>}
+          </section>
+        )}
+
+        {view === 'tasks' && (
+          token && profile && isAdministrator &&
           <section className="panel">
             <h3>Open tasks</h3>
             <div className="task-list">
@@ -750,7 +904,8 @@ function App() {
           </section>
         )}
 
-        {view === 'new-task' && token && profile && isManager && (
+        {view === 'new-task' && (
+          token && profile && isAdministrator &&
           <section className="panel">
             <h3>Create a new task</h3>
             <form className="task-form" onSubmit={handleCreateTask}>
@@ -778,15 +933,22 @@ function App() {
                 </label>
               </div>
               <label>
-                Assignee ID
-                <input value={form.assignee} onChange={(event) => setForm({ ...form, assignee: event.target.value })} placeholder="Leave empty for self-assignment" />
+                Employee
+                <select value={form.assignee} onChange={(event) => setForm({ ...form, assignee: event.target.value })} required>
+                  <option value="">Select employee</option>
+                  {employees.filter((employee) => employee.role === 'it_employee').map((employee) => (
+                    <option value={employee.id} key={employee.id}>
+                      {[employee.first_name, employee.last_name].filter(Boolean).join(' ') || employee.username}
+                    </option>
+                  ))}
+                </select>
               </label>
               <button type="submit">Create task</button>
             </form>
           </section>
         )}
 
-        {view === 'attendance' && token && (
+        {view === 'attendance' && token && profile && !isEmployee && (
           <section className="content-grid">
             <div className="panel wide-panel attendance-actions">
               <div>
@@ -821,8 +983,12 @@ function App() {
                         <span>In: {record.check_in ? new Date(record.check_in).toLocaleTimeString() : 'Not recorded'}</span>
                         <span>Out: {record.check_out ? new Date(record.check_out).toLocaleTimeString() : 'Not recorded'}</span>
                         <span>Recorded duration: {record.worked_minutes === null ? 'Incomplete' : `${record.worked_minutes} minutes`}</span>
+                        <span>{record.approved_at ? `Approved by ${record.approved_by_name || 'manager'} · ${new Date(record.approved_at).toLocaleString()}` : 'Awaiting manager approval'}</span>
                       </div>
-                      {isManager && (
+                      {isManager && !record.approved_at && (isAdministrator || record.employee !== profile?.id) && (
+                        <button className="secondary" onClick={() => handleAttendanceApproval(record)}>Approve attendance</button>
+                      )}
+                      {isAdministrator && (
                         <details className="correction-details">
                           <summary>Correct attendance (reason required)</summary>
                           <form className="task-form compact-form" onSubmit={(event) => handleAttendanceCorrection(event, record)}>
@@ -891,7 +1057,7 @@ function App() {
               </div>
             </div>
 
-            {isManager && (
+            {isAdministrator && (
               <div className="panel wide-panel">
                 <h3>Configure a work schedule</h3>
                 <form className="task-form compact-form" onSubmit={handleScheduleCreate}>
@@ -923,9 +1089,9 @@ function App() {
           </section>
         )}
 
-        {view === 'feedback' && token && (
+        {view === 'feedback' && token && profile && isAdministrator && (
           <section className="content-grid">
-            {isManager && (
+            {isAdministrator && (
               <div className="panel wide-panel">
                 <h3>Publish private employee feedback</h3>
                 <form className="task-form compact-form" onSubmit={handleFeedbackCreate}>
@@ -968,7 +1134,7 @@ function App() {
                           </form>
                         </div>
                       )}
-                      {isManager && (
+                      {isAdministrator && (
                         <form className="task-form compact-form action-form" onSubmit={(event) => handleCreateAction(event, item)}>
                           <strong>Create a follow-up action</strong>
                           <label>Action title<input name="title" required /></label>
@@ -989,7 +1155,7 @@ function App() {
                           {item.action_items.map((action) => (
                             <li key={action.id}>
                               <span>{action.title} · {action.due_date || 'No due date'}</span>
-                              {action.assigned_to === profile?.id || isManager ? (
+                              {action.assigned_to === profile?.id || isAdministrator ? (
                                 <select value={action.status} onChange={(event) => handleActionStatus(action.id, event.target.value)}>
                                   <option value="open">Open</option><option value="in_progress">In progress</option><option value="completed">Completed</option>
                                 </select>
