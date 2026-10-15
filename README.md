@@ -40,7 +40,7 @@ Open http://localhost:5173. Sign in with the Django account; the API is served a
 
 ## Roles and manager teams
 
-The user role is Administrator, IT Manager or IT Employee. Set an employee's direct manager on the user record in Django admin (`/admin/`). Attendance and feedback access for managers is limited to their direct reports; administrators can manage all users. Existing accounts have no manager assigned until configured.
+The user role is Administrator, IT Manager or IT Employee. Employees land on `/my-workspace`, which loads their own tasks, attendance, private feedback, development actions and notifications. The API scopes these records to the authenticated user; employees can update task status but cannot change task details or access another employee's records. Managers see their own work and their direct reports' records, while administrators can manage all users and records. Set an employee's direct manager on the user record in Django admin (`/admin/`). Existing accounts have no manager assigned until configured.
 
 ## API overview
 
